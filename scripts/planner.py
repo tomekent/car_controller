@@ -9,7 +9,7 @@ from sensor_msgs.msg import LaserScan
 import math
 
 
-class pathPublisher():
+class pathPlanner():
 	def __init__(self):
 		self.update_rate = 60
 
@@ -19,7 +19,7 @@ class pathPublisher():
 		self.rccar_speed = 1.0 # speed in m/s
 
 
-		self.pioneer_pub = rospy.Publisher("/cmd_vel", Twist)
+		self.pioneer_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
 		self.rccar_pub = rospy.Publisher("/rcctrl", Twist, queue_size=1)
 		self.sick_data = rospy.Subscriber("/scan", LaserScan, self.scan_data_callback)
 
@@ -48,16 +48,16 @@ def set_cmd_ctrl(cmd, speed, steer):
 	return cmd
 
 def main():
-	path_publisher = pathPublisher()
-	rospy.init_node('pioneer_path_publisher')
+	planner = pathPlanner()
+	rospy.init_node('pioneer_path_planner')
 	rospy.loginfo("path publisher up and running!")
 
-	r = rospy.Rate(path_publisher.update_rate)
-	dt = 1/ path_publisher.update_rate
+	r = rospy.Rate(planner.update_rate)
+	dt = 1./ planner.update_rate
 	pioneer_max_dist = 6.0 # m
-	rccar_max_dist = 2 # m
+	rccar_max_dist = 5.0  # m
 	
-	rccar_nom_speed = 1.0 # m/s
+	rccar_nom_speed = .25 # m/s
 
 	pioneer_cmd = Twist()
 	rccar_cmd = Twist()
@@ -66,7 +66,7 @@ def main():
 
 
 		#### Do the pioneer Logic ####
-		nearest_reading = path_publisher.get_nearest_reading()
+		nearest_reading = planner.get_nearest_reading()
 
 		if nearest_reading < 1:
 			# STOP
@@ -82,11 +82,11 @@ def main():
 			pioneer_cmd = set_cmd_ctrl(pioneer_cmd, pioneer_speed, pioneer_steer)
 
 
-		if path_publisher.pioneer_travel_dist < pioneer_max_dist:
+		if planner.pioneer_travel_dist > pioneer_max_dist:
 			pioneer_speed = 0.0
 			pioneer_steer = 0.0
 			pioneer_cmd = set_cmd_ctrl(pioneer_cmd, pioneer_speed, pioneer_steer)			
-			rospy.loginfo("pioneer has travelled too far (%2.2f meters) stopping." %path_publisher.pioneer_travel_dist)
+			rospy.loginfo("pioneer has travelled too far (%2.2f meters) stopping." %planner.pioneer_travel_dist)
 
 
 
@@ -96,23 +96,26 @@ def main():
 		rccar_steer = 0.0
 		rccar_cmd = set_cmd_ctrl(rccar_cmd, rccar_speed, rccar_steer)
 
-		if path_publisher.rccar_travel_dist < rccar_max_dist:
+		if planner.rccar_travel_dist > rccar_max_dist:
 			rccar_speed = 0.0
 			rccar_steer = 0.0
 			rccar_cmd = set_cmd_ctrl(rccar_cmd, rccar_speed, rccar_steer)
-			rospy.loginfo("rccar has travelled too far (%2.2f meters) stopping." %path_publisher.rccar_travel_dist)
+			rospy.loginfo("rccar has travelled too far (%2.2f meters) stopping." %planner.rccar_travel_dist)
 
 			
 		rospy.loginfo("publishing a command to Pioneer")
-		path_publisher.pioneer_pub.publish(pioneer_cmd)
+		planner.pioneer_pub.publish(pioneer_cmd)
 		
-		rospy.loginfo("publishing a command to rccar")
-		path_publisher.pioneer_pub.publish(rccar_cmd)
+		rospy.loginfo("publishing a command to rccar: {v: %2.2f, w: %2.2f}" %(rccar_cmd.linear.x, rccar_cmd.angular.x))
+		planner.rccar_pub.publish(rccar_cmd)
 
 		# update the distances based on the speeds
-		path_publisher.rccar_travel_dist += dt*rccar_speed
-		path_publisher.pioneer_travel_dist += dt*pioneer_speed
+		
+		planner.pioneer_travel_dist += dt*pioneer_speed
+		rospy.loginfo("pioneer has travelled: %2.4f meters" %planner.pioneer_travel_dist)		
 
+		planner.rccar_travel_dist += dt*rccar_speed
+		rospy.loginfo("rccar has travelled: %2.4f meters" %planner.rccar_travel_dist)	
 
 
 
