@@ -4,21 +4,33 @@
 import rospy
 import std_msgs.msg
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, Pose
 from sensor_msgs.msg import LaserScan
 import math
+import tf
+from tf.transformations import quaternion_from_euler, euler_from_quaternion
 
 
 class pathPlanner():
 	def __init__(self):
 		self.update_rate = 60
 
+		self.origin_x = 0.0
+		self.origin_y = 0.0
+		self.origin_yaw = 0.0
 		self.scanData = []
 		self.pioneer_nom_v = 0.5
 		self.pioneer_travel_dist = 0.0
 
-		self.current_vel = Twist()
+		self.tf_listener = tf.TransformListener()
+		self.br = tf.TransformBroadcaster()
+		self.brglobal = tf.TransformBroadcaster()
+		self.current_pose_odom = Pose()
+		self.current_vel_odom = Twist()
 
+		self.init_pose = Pose()
+
+		self.init_flag = True
 		self.obs_buffer = 0.5 # avoidance distance m.
 		self.rccar_travel_dist = 0.0
 		self.rccar_speed = 1.0 # speed in m/s
@@ -36,10 +48,37 @@ class pathPlanner():
 		return True
 
 	def odometry_callback(self, data):
-		self.current_pose.position = data.pose.pose.position
-		self.current_pose.orientation = data.pose.pose.orientation
-		self.current_vel.linear = data.twist.twist.linear
-		self.current_vel.angular = data.twist.twist.angular
+		if self.init_flag: # set the initial odometry location
+			self.init_pose.position = data.pose.pose.position
+			self.init_pose.orientation = data.pose.pose.orientation
+			self.init_flag = False
+			euler = euler_from_quaternion([self.init_pose.orientation.x, self.init_pose.orientation.y, self.init_pose.orientation.z, self.init_pose.orientation.w])
+			yaw = euler[2]
+			print("Initial pose: x: %2.2f, y: %2.2f, theta: %2.2f" %(self.init_pose.position.x, self.init_pose.position.y, yaw))
+
+		q = quaternion_from_euler(self.origin_yaw, 0.,0.,'rzyx')
+		self.br.sendTransform((self.origin_x, self.origin_y, 0.),
+						 (q[0], q[1], q[2], q[3]),
+		# br.sendTransform((data.pose.pose.position.x, data.pose.pose.position.y, data.pose.pose.position.z),
+  						# (data.pose.pose.orientation.x, data.pose.pose.orientation.y, data.pose.pose.orientation.z, data.pose.pose.orientation.w),
+  						rospy.Time.now(),
+  						"odom_initialised",
+  						"global")
+
+		self.brglobal.sendTransform((self.init_pose.position.x, self.init_pose.position.y, self.init_pose.position.z),
+						 (self.init_pose.orientation.x, self.init_pose.orientation.y, self.init_pose.orientation.z, self.init_pose.orientation.w),
+		# br.sendTransform((data.pose.pose.position.x, data.pose.pose.position.y, data.pose.pose.position.z),
+  						# (data.pose.pose.orientation.x, data.pose.pose.orientation.y, data.pose.pose.orientation.z, data.pose.pose.orientation.w),
+  						rospy.Time.now(),
+  						"odom",
+  						"odom_initialised")
+
+		self.current_pose_odom.position = data.pose.pose.position
+		self.current_pose_odom.orientation = data.pose.pose.orientation
+		self.current_vel_odom.linear = data.twist.twist.linear
+		self.current_vel_odom.angular = data.twist.twist.angular
+
+
 		# print self.current_vel.linear.x
 
 	def get_nearest_reading(self):
@@ -55,7 +94,7 @@ class pathPlanner():
 		ob_dist_min = self.obs_buffer
 
 		nom_vel = self.pioneer_nom_v
-		current_vel = self.current_vel.linear.x
+		current_vel = self.current_vel_odom.linear.x
 		acc = 4. #m/s/s
 		decc = -2. #m/s/s
 		max_decc = -4.
@@ -101,8 +140,8 @@ def set_cmd_ctrl(cmd, speed, steer):
 	return cmd
 
 def main():
-	planner = pathPlanner()
 	rospy.init_node('pioneer_path_planner')
+	planner = pathPlanner()
 	rospy.loginfo("path publisher up and running!")
 
 	r = rospy.Rate(planner.update_rate)
@@ -117,7 +156,13 @@ def main():
 
 	while not rospy.is_shutdown():
 
-
+		try:
+			(trans, rot)=planner.tf_listener.lookupTransform('/odom', '/global',rospy.Time(0))
+			print trans
+			print rot
+		except:
+			print "pass"
+			pass
 		#### Do the pioneer Logic ####
 		nearest_reading = planner.get_nearest_reading()
 
@@ -167,7 +212,7 @@ def main():
 
 		# update the distances based on the speeds
 		
-		planner.pioneer_travel_dist += dt*planner.current_vel.linear.x
+		planner.pioneer_travel_dist += dt*planner.current_vel_odom.linear.x
 		# rospy.loginfo("pioneer has travelled: %2.4f meters" %planner.pioneer_travel_dist)		
 
 		# planner.rccar_travel_dist += dt*rccar_speed
